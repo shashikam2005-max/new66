@@ -1,0 +1,10 @@
+{
+  "name": "stylecue-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix new66-main run dev",
+    "build": "npm --prefix new66-main run build",
+    "preview": "npm --prefix new66-main run preview",
+    "lint": "npm --prefix new66-main run lint"
+  }
+}
