@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Play,
   Pause,
@@ -6,30 +6,19 @@ import {
   Volume2,
   VolumeX,
   Maximize2,
+  Minimize2,
   Sparkles,
-  Upload,
   Film,
   ArrowRight,
-  Check,
-  AlertCircle,
-  HelpCircle,
-  RefreshCw,
   CheckCircle2
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
-import {
-  saveVideoToIndexedDB,
-  getVideoFromIndexedDB,
-  uploadVideoToServer,
-  checkServerVideoStatus
-} from '../utils/videoStorage';
 
 interface VideoShowcaseSectionProps {
   onStartQuiz: () => void;
 }
 
-const DEFAULT_VIDEO_SRC = '/Stylecue_video.mp4';
-const FALLBACK_POSTER = 'https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=1400&q=80';
+const VIDEO_SRC = '/Stylecue_video.mp4';
 
 export const VideoShowcaseSection: React.FC<VideoShowcaseSectionProps> = ({ onStartQuiz }) => {
   const { themeConfig } = useTheme();
@@ -37,70 +26,55 @@ export const VideoShowcaseSection: React.FC<VideoShowcaseSectionProps> = ({ onSt
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(18);
   const [isMuted, setIsMuted] = useState(true);
-  const [customVideoSrc, setCustomVideoSrc] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [hostingStatus, setHostingStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [isServerHosted, setIsServerHosted] = useState<boolean>(false);
-  const [showHostingGuide, setShowHostingGuide] = useState<boolean>(false);
+  const [showControls, setShowControls] = useState(true);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load video on mount: First check server (/Stylecue_video.mp4), then check IndexedDB cache
+  // Auto-hide controls during playback on desktop after 3s of inactivity
+  const handleMouseMove = () => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+    }
+    if (isPlaying) {
+      controlsTimeoutRef.current = setTimeout(() => {
+        setShowControls(false);
+      }, 3000);
+    }
+  };
+
   useEffect(() => {
-    let isMounted = true;
-
-    async function initVideo() {
-      try {
-        // 1. Check if server has /Stylecue_video.mp4
-        const serverStatus = await checkServerVideoStatus();
-        if (serverStatus.exists && isMounted) {
-          setCustomVideoSrc(serverStatus.url);
-          setIsServerHosted(true);
-          setHostingStatus('saved');
-          setStatusMessage('Hosted on server (/public/Stylecue_video.mp4)');
-          return;
-        }
-
-        // 2. Check if IndexedDB has a previously uploaded video
-        const cachedBlob = await getVideoFromIndexedDB();
-        if (cachedBlob && isMounted) {
-          const blobUrl = URL.createObjectURL(cachedBlob);
-          setCustomVideoSrc(blobUrl);
-          setHostingStatus('saved');
-          setStatusMessage('Loaded from local cache. Upload to sync with server.');
-
-          // Try background sync to server if server doesn't have it yet
-          uploadVideoToServer(cachedBlob).then((res) => {
-            if (res.success && isMounted) {
-              setIsServerHosted(true);
-              setStatusMessage('Hosted on server (/public/Stylecue_video.mp4)');
+    // Attempt auto-play when component mounts
+    if (videoRef.current) {
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => setIsPlaying(true))
+          .catch(() => {
+            // Autoplay with sound might be blocked, ensure muted
+            if (videoRef.current) {
+              videoRef.current.muted = true;
+              setIsMuted(true);
+              videoRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
             }
           });
-          return;
-        }
-
-        // 3. Check direct /Stylecue_video.mp4 load
-        if (isMounted) {
-          setCustomVideoSrc(DEFAULT_VIDEO_SRC);
-        }
-      } catch (err) {
-        console.warn('Video init check error:', err);
       }
     }
 
-    initVideo();
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
 
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => {
-      isMounted = false;
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     };
   }, []);
 
-  // Sync custom video player state
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
@@ -110,98 +84,52 @@ export const VideoShowcaseSection: React.FC<VideoShowcaseSectionProps> = ({ onSt
     }
   };
 
+  const handleLoadedMetadata = () => {
+    if (videoRef.current && videoRef.current.duration && !isNaN(videoRef.current.duration)) {
+      setDuration(videoRef.current.duration);
+    }
+  };
+
   const togglePlay = () => {
-    if (videoRef.current && customVideoSrc) {
-      if (videoRef.current.paused) {
-        videoRef.current.play().catch(() => {});
-        setIsPlaying(true);
-      } else {
-        videoRef.current.pause();
-        setIsPlaying(false);
-      }
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
     } else {
-      setIsPlaying(!isPlaying);
+      videoRef.current.pause();
+      setIsPlaying(false);
+      setShowControls(true);
     }
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     setCurrentTime(time);
-    if (videoRef.current && customVideoSrc) {
+    if (videoRef.current) {
       videoRef.current.currentTime = time;
     }
   };
 
-  // Core handler for saving and hosting the video file
-  const processVideoFile = async (file: File) => {
-    if (!file) return;
-
-    try {
-      setIsUploading(true);
-      setHostingStatus('saving');
-      setStatusMessage('Embedding and saving video to /public/Stylecue_video.mp4...');
-
-      // 1. Immediately create local URL for instant smooth playback
-      const localUrl = URL.createObjectURL(file);
-      setCustomVideoSrc(localUrl);
-      setIsPlaying(true);
+  const handleRestart = () => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0;
       setCurrentTime(0);
-
-      // 2. Persist to IndexedDB so browser always remembers across reloads
-      await saveVideoToIndexedDB(file);
-
-      // 3. Upload directly to the server so it writes to /public/Stylecue_video.mp4
-      const uploadRes = await uploadVideoToServer(file);
-
-      if (uploadRes.success) {
-        setIsServerHosted(true);
-        setHostingStatus('saved');
-        setStatusMessage('Video saved to /public/Stylecue_video.mp4. Ready for hosting!');
-      } else {
-        setHostingStatus('saved');
-        setStatusMessage('Video saved locally in browser. Note: Place in /public for all visitors.');
-      }
-    } catch (err: any) {
-      console.error('Error processing video:', err);
-      setHostingStatus('error');
-      setStatusMessage(err?.message || 'Failed to save video');
-    } finally {
-      setIsUploading(false);
+      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      processVideoFile(file);
-    }
+  const toggleMute = () => {
+    if (!videoRef.current) return;
+    const nextMuted = !isMuted;
+    videoRef.current.muted = nextMuted;
+    setIsMuted(nextMuted);
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file && file.type.startsWith('video/')) {
-      processVideoFile(file);
-    }
-  };
-
-  const handleFullscreenToggle = () => {
+  const toggleFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+      containerRef.current.requestFullscreen().catch(() => {});
     } else {
-      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+      document.exitFullscreen().catch(() => {});
     }
   };
 
@@ -220,7 +148,7 @@ export const VideoShowcaseSection: React.FC<VideoShowcaseSectionProps> = ({ onSt
       <div className="text-center max-w-3xl mx-auto space-y-4 mb-8">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full glass-panel border text-xs font-mono font-bold uppercase tracking-wider">
           <Film className="w-3.5 h-3.5" style={{ color: themeConfig.primaryAccent }} />
-          StyleCue Commercial & Demo Video
+          Official StyleCue Commercial
         </div>
 
         <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight">
@@ -232,107 +160,83 @@ export const VideoShowcaseSection: React.FC<VideoShowcaseSectionProps> = ({ onSt
         </p>
       </div>
 
-      {/* Main Video Cinema Theater (Spacious, Centered Screen Without Chapters) */}
+      {/* Main Video Cinema Theater (Direct built-in video, playable instantly on any device) */}
       <div className="max-w-5xl mx-auto space-y-6">
         <div
           ref={containerRef}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          className={`relative rounded-3xl overflow-hidden glass-panel-elevated border shadow-2xl aspect-video group bg-black flex flex-col justify-between transition-all duration-300 ${
-            isDragOver ? 'border-2 ring-4 ring-purple-500/50 scale-[1.01]' : 'border-white/15'
-          }`}
-          style={{
-            borderColor: isDragOver ? themeConfig.primaryAccent : undefined,
-          }}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => isPlaying && setShowControls(false)}
+          className="relative rounded-3xl overflow-hidden glass-panel-elevated border border-white/15 shadow-2xl aspect-video group bg-black flex flex-col justify-between"
         >
-          {/* Drag & Drop Overlay Indicator */}
-          {isDragOver && (
-            <div className="absolute inset-0 z-40 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center pointer-events-none p-6 text-center">
-              <Upload className="w-16 h-16 animate-bounce mb-3" style={{ color: themeConfig.primaryAccent }} />
-              <h4 className="text-xl font-bold text-white mb-1">Drop your StyleCue Video Here</h4>
-              <p className="text-xs text-white/80 max-w-sm">
-                We will embed the video and save it to /public/Stylecue_video.mp4 for permanent hosting.
-              </p>
+          {/* Permanent embedded video element */}
+          <video
+            ref={videoRef}
+            src={VIDEO_SRC}
+            className="w-full h-full object-cover cursor-pointer"
+            onClick={togglePlay}
+            onTimeUpdate={handleTimeUpdate}
+            onLoadedMetadata={handleLoadedMetadata}
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            autoPlay
+            loop
+            muted={isMuted}
+            playsInline
+            preload="auto"
+          />
+
+          {/* Top Overlay Badge */}
+          <div
+            className={`absolute top-4 left-4 z-20 flex items-center gap-2 transition-opacity duration-300 pointer-events-none ${
+              showControls ? 'opacity-100' : 'opacity-0'
+            }`}
+          >
+            <div className="px-3 py-1 rounded-full glass-panel border border-white/20 text-[11px] font-mono font-bold uppercase tracking-wider text-white flex items-center gap-1.5 backdrop-blur-md">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+              <span>StyleCue Experience</span>
+            </div>
+          </div>
+
+          {/* Audio Unmute Quick-Pill for mobile / quick access */}
+          {isMuted && (
+            <div className="absolute top-4 right-4 z-20">
+              <button
+                onClick={toggleMute}
+                className="px-3 py-1.5 rounded-full glass-panel-elevated border border-white/20 text-xs text-white font-mono flex items-center gap-1.5 backdrop-blur-md hover:scale-105 active:scale-95 transition-all cursor-pointer shadow-lg"
+              >
+                <VolumeX className="w-3.5 h-3.5 text-amber-300" />
+                <span>Tap to Unmute</span>
+              </button>
             </div>
           )}
 
-          {/* Native Video Element if uploaded or default source */}
-          {customVideoSrc ? (
-            <video
-              ref={videoRef}
-              src={customVideoSrc}
-              className="w-full h-full object-cover"
-              onLoadedMetadata={handleTimeUpdate}
-              onTimeUpdate={handleTimeUpdate}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
-              onError={() => {
-                console.warn('Video failed to load from customVideoSrc, falling back to showcase poster.');
-                setCustomVideoSrc(null);
-              }}
-              autoPlay
-              loop
-              playsInline
-              muted={isMuted}
-            />
-          ) : (
-            /* High-fidelity interactive animated video showcase representation */
-            <div className="absolute inset-0 overflow-hidden">
-              <img
-                src={FALLBACK_POSTER}
-                alt="StyleCue Commercial Showcase"
-                className="w-full h-full object-cover filter brightness-[0.75] contrast-[1.05] transition-all duration-700 scale-100 group-hover:scale-105"
-              />
-
-              {/* Top Overlay Badge */}
-              <div className="absolute top-4 left-4 z-10 flex items-center gap-2">
-                <div className="px-3 py-1 rounded-full glass-panel border border-white/20 text-[11px] font-mono font-bold uppercase tracking-wider text-white flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                  <span>StyleCue Commercial Cinema</span>
-                </div>
-              </div>
-
-              {/* Center Call-to-action to load user's video file */}
-              <div className="absolute inset-0 flex items-center justify-center p-4 z-20 pointer-events-none">
-                <div className="p-6 rounded-3xl glass-panel-elevated border border-white/20 max-w-sm text-center space-y-3 shadow-2xl backdrop-blur-md pointer-events-auto bg-black/75">
-                  <div
-                    className="w-12 h-12 rounded-2xl mx-auto flex items-center justify-center shadow-lg"
-                    style={{ backgroundColor: `${themeConfig.primaryAccent}30`, color: themeConfig.primaryAccent }}
-                  >
-                    <Film className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h3 className="text-base font-bold text-white">Embed Commercial Video</h3>
-                    <div className="text-[11px] font-mono text-amber-300 mt-1 flex items-center justify-center gap-1">
-                      <Upload className="w-3 h-3" />
-                      <span>Target: E:\Stylecue_video.mp4</span>
-                    </div>
-                  </div>
-                  <p className="text-[11px] text-white/80 leading-relaxed">
-                    Browsers cannot open local drive paths like <code className="text-amber-200">E:\</code> directly. Click below to select it or drag & drop it here.
-                  </p>
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="w-full py-2.5 px-4 rounded-xl font-bold font-mono text-xs uppercase tracking-wider text-slate-950 shadow-lg flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-95 transition-all cursor-pointer"
-                    style={{ backgroundColor: themeConfig.primaryAccent }}
-                  >
-                    <Upload className="w-4 h-4" />
-                    <span>Select E:\Stylecue_video.mp4</span>
-                  </button>
-                </div>
+          {/* Center Play/Pause Indicator (visible when paused) */}
+          {!isPlaying && (
+            <div
+              onClick={togglePlay}
+              className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 backdrop-blur-[2px] cursor-pointer transition-all"
+            >
+              <div
+                className="w-20 h-20 rounded-full flex items-center justify-center shadow-2xl transition-transform hover:scale-110 active:scale-95 text-slate-950"
+                style={{ backgroundColor: themeConfig.primaryAccent }}
+              >
+                <Play className="w-8 h-8 fill-current ml-1" />
               </div>
             </div>
           )}
 
           {/* Bottom Controls Bar */}
-          <div className="relative z-20 p-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent border-t border-white/10 space-y-2 mt-auto">
+          <div
+            className={`relative z-20 p-4 bg-gradient-to-t from-black/95 via-black/80 to-transparent border-t border-white/10 space-y-2 mt-auto transition-opacity duration-300 ${
+              showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
+            }`}
+          >
             {/* Progress Slider */}
             <div className="flex items-center gap-3">
               <input
                 type="range"
                 min={0}
-                max={duration}
+                max={duration || 18}
                 step={0.1}
                 value={currentTime}
                 onChange={handleSeek}
@@ -345,7 +249,7 @@ export const VideoShowcaseSection: React.FC<VideoShowcaseSectionProps> = ({ onSt
 
             {/* Controls and Timestamps */}
             <div className="flex items-center justify-between text-xs text-white pt-1 font-mono">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 sm:gap-3">
                 <button
                   onClick={togglePlay}
                   className="p-2 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
@@ -355,58 +259,33 @@ export const VideoShowcaseSection: React.FC<VideoShowcaseSectionProps> = ({ onSt
                 </button>
 
                 <button
-                  onClick={() => {
-                    setCurrentTime(0);
-                    if (videoRef.current) videoRef.current.currentTime = 0;
-                  }}
+                  onClick={handleRestart}
                   className="p-2 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
-                  title="Restart"
+                  title="Restart Video"
                 >
                   <RotateCcw className="w-4 h-4" />
                 </button>
 
                 <button
-                  onClick={() => setIsMuted(!isMuted)}
+                  onClick={toggleMute}
                   className="p-2 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
                   title={isMuted ? 'Unmute' : 'Mute'}
                 >
-                  {isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
+                  {isMuted ? <VolumeX className="w-4 h-4 text-amber-300" /> : <Volume2 className="w-4 h-4" />}
                 </button>
 
-                <span className="opacity-80">
+                <span className="opacity-80 text-[11px] sm:text-xs">
                   {formatTime(currentTime)} / {formatTime(duration)}
                 </span>
               </div>
 
               <div className="flex items-center gap-2">
-                {/* Upload video button */}
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleFileUpload}
-                  accept="video/mp4,video/webm,video/ogg,video/quicktime"
-                  className="hidden"
-                />
                 <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploading}
-                  className="px-3 py-1.5 rounded-xl glass-panel border border-white/15 text-[11px] hover:bg-white/15 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  title="Upload video file to host permanently in /public/Stylecue_video.mp4"
-                >
-                  {isUploading ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
-                  ) : (
-                    <Upload className="w-3.5 h-3.5" />
-                  )}
-                  <span>{isUploading ? 'Saving...' : customVideoSrc ? 'Replace Video' : 'Add Video File (.mp4)'}</span>
-                </button>
-
-                <button
-                  onClick={handleFullscreenToggle}
+                  onClick={toggleFullscreen}
                   className="p-2 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
-                  title="Fullscreen"
+                  title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
                 >
-                  <Maximize2 className="w-4 h-4" />
+                  {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                 </button>
               </div>
             </div>
